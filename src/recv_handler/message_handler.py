@@ -8,6 +8,7 @@ from src.utils import (
     get_self_info,
     get_message_detail,
 )
+import asyncio
 import base64
 from .qq_emoji_list import qq_face
 from .message_sending import message_send_instance
@@ -980,7 +981,7 @@ class MessageHandler:
         try:
             await self.server_connection.send(payload)
             response: dict = await get_response(request_uuid)
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             logger.error("获取转发消息超时")
             return None
         except Exception as e:

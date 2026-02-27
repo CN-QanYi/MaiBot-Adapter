@@ -2,9 +2,11 @@ import websockets as Server
 import json
 import base64
 import uuid
-import urllib3
 import ssl
 import io
+import asyncio
+
+import aiohttp
 
 from src.database import BanUser, db_manager
 from .logger import logger
@@ -14,13 +16,12 @@ from PIL import Image
 from typing import Union, List, Tuple, Optional
 
 
-class SSLAdapter(urllib3.PoolManager):
-    def __init__(self, *args, **kwargs):
-        context = ssl.create_default_context()
-        context.set_ciphers("DEFAULT@SECLEVEL=1")
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
-        kwargs["ssl_context"] = context
-        super().__init__(*args, **kwargs)
+def _create_ssl_context() -> ssl.SSLContext:
+    """创建自定义 SSL 上下文，兼容低安全级别的服务器"""
+    context = ssl.create_default_context()
+    context.set_ciphers("DEFAULT@SECLEVEL=1")
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
 
 
 async def get_group_info(websocket: Server.ServerConnection, group_id: int) -> dict | None:
@@ -35,7 +36,7 @@ async def get_group_info(websocket: Server.ServerConnection, group_id: int) -> d
     try:
         await websocket.send(payload)
         socket_response: dict = await get_response(request_uuid)
-    except TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         logger.error(f"获取群信息超时，群号: {group_id}")
         return None
     except Exception as e:
@@ -57,7 +58,7 @@ async def get_group_detail_info(websocket: Server.ServerConnection, group_id: in
     try:
         await websocket.send(payload)
         socket_response: dict = await get_response(request_uuid)
-    except TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         logger.error(f"获取群详细信息超时，群号: {group_id}")
         return None
     except Exception as e:
@@ -85,7 +86,7 @@ async def get_member_info(websocket: Server.ServerConnection, group_id: int, use
     try:
         await websocket.send(payload)
         socket_response: dict = await get_response(request_uuid)
-    except TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         logger.error(f"获取成员信息超时，群号: {group_id}, 用户ID: {user_id}")
         return None
     except Exception as e:
@@ -95,19 +96,35 @@ async def get_member_info(websocket: Server.ServerConnection, group_id: int, use
     return socket_response.get("data")
 
 
-async def get_image_base64(url: str) -> str:
-    # sourcery skip: raise-specific-error
-    """获取图片/表情包的Base64"""
+async def get_image_base64(url: str, timeout: int = 10) -> str:
+    """获取图片/表情包的Base64（异步非阻塞）
+
+    Parameters:
+        url: 图片的 URL 地址
+        timeout: 请求超时时间（秒），默认 10 秒
+    Returns:
+        str: Base64 编码的图片数据
+    Raises:
+        Exception: 下载失败时抛出异常
+    """
     logger.debug(f"下载图片: {url}")
-    http = SSLAdapter()
+    ssl_ctx = _create_ssl_context()
+    client_timeout = aiohttp.ClientTimeout(total=timeout)
     try:
-        response = http.request("GET", url, timeout=10)
-        if response.status != 200:
-            raise Exception(f"HTTP Error: {response.status}")
-        image_bytes = response.data
-        return base64.b64encode(image_bytes).decode("utf-8")
+        async with aiohttp.ClientSession(timeout=client_timeout) as session:
+            async with session.get(url, ssl=ssl_ctx) as response:
+                if response.status != 200:
+                    raise Exception(f"HTTP Error: {response.status}")
+                image_bytes = await response.read()
+                return base64.b64encode(image_bytes).decode("utf-8")
+    except (TimeoutError, asyncio.TimeoutError):
+        logger.error(f"图片下载超时（{timeout}s）: {url}")
+        raise
+    except aiohttp.ClientError as e:
+        logger.error(f"图片下载网络错误: {url} - {e}")
+        raise
     except Exception as e:
-        logger.error(f"图片下载失败: {str(e)}")
+        logger.error(f"图片下载失败: {url} - {e}")
         raise
 
 
@@ -147,7 +164,7 @@ async def get_self_info(websocket: Server.ServerConnection) -> dict | None:
     try:
         await websocket.send(payload)
         response: dict = await get_response(request_uuid)
-    except TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         logger.error("获取自身信息超时")
         return None
     except Exception as e:
@@ -184,7 +201,7 @@ async def get_stranger_info(websocket: Server.ServerConnection, user_id: int) ->
     try:
         await websocket.send(payload)
         response: dict = await get_response(request_uuid)
-    except TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         logger.error(f"获取陌生人信息超时，用户ID: {user_id}")
         return None
     except Exception as e:
@@ -209,7 +226,7 @@ async def get_message_detail(websocket: Server.ServerConnection, message_id: Uni
     try:
         await websocket.send(payload)
         response: dict = await get_response(request_uuid, 30)  # 增加超时时间到30秒
-    except TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         logger.error(f"获取消息详情超时，消息ID: {message_id}")
         return None
     except Exception as e:
@@ -243,7 +260,7 @@ async def get_record_detail(
     try:
         await websocket.send(payload)
         response: dict = await get_response(request_uuid, 30)  # 增加超时时间到30秒
-    except TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         logger.error(f"获取语音消息详情超时，文件: {file}, 文件ID: {file_id}")
         return None
     except Exception as e:
