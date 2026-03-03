@@ -1,5 +1,6 @@
 import json
 import uuid
+import asyncio
 import websockets as Server
 from maim_message import MessageBase
 
@@ -20,7 +21,7 @@ class NCMessageSender:
         await self.server_connection.send(payload)
         try:
             response = await get_response(request_uuid)
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             logger.error("发送消息超时，未收到响应")
             return {"status": "error", "message": "timeout"}
         except Exception as e:
